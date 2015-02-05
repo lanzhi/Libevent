@@ -2078,6 +2078,54 @@ event_base_set(struct event_base *base, struct event *ev)
 	return (0);
 }
 
+/* XXXX we also need an evcallback_move */
+
+int
+event_base_move(struct event *ev, struct event_base *newbase)
+{
+	struct event_base *base1;
+	int inserted = 0;
+	uint16_t active_flags = 0;
+	struct timeval old_timeout, *tv = NULL;
+
+	EVUTIL_ASSERT(ev);
+
+	if (newbase == NULL)
+		newbase = event_global_current_base_;
+
+	base1 = ev->ev_base;
+	if (base1 == newbase)
+		return (0);
+
+	/* First remove the event from its current base. */
+	if (base1) {
+		EVBASE_ACQUIRE_LOCK(base1, th_base_lock);
+		if (ev->ev_flags & EVLIST_INSERTED)
+			inserted = 1;
+		if (ev->ev_flags & EVLIST_ACTIVE|EVLIST_ACTIVE_LATER)
+			active_flags = ev->ev_res;
+		if (ev->ev_flags & EVLIST_TIMEOUT) {
+			old_timeout = ev->ev_timeout;
+			old_timeout.tv_usec &= MICROSECONDS_MASK;
+			evutil_timeradd(&base1->tv_clock_diff, &old_timeout, old_timeout);
+			tv = &old_timeout;
+		}
+		event_del_nolock_(ev, EVENT_DEL_AUTOBLOCK);
+		EVBASE_RELEASE_LOCK(base1, th_base_lock);
+	}
+
+	/* Next assign it to the new one, and add it as appropriate. */
+	EVBASE_ACQUIRE_LOCK(newbase, th_base_lock);
+	ev->ev_base = newbase;
+	if (ev->ev_pri >= base->nactivequeues)
+		ev->ev_pri = base->nactivequeues - 1;
+	if (inserted)
+		event_add_nolock(ev, tv, 1);
+	if (active_flags)
+		event_active_nolock_(ev, EV_TIMEOUT, 1);
+	EVBASE_RELEASE_LOCK(newbase, th_base_lock);
+}
+
 void
 event_set(struct event *ev, evutil_socket_t fd, short events,
 	  void (*callback)(evutil_socket_t, short, void *), void *arg)
